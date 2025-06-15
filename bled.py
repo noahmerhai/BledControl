@@ -2,6 +2,7 @@ import asyncio
 import matplotlib
 from bleak import BleakClient, BleakScanner
 import sys
+import argparse
 
 # Constants for your specific device
 DEVICE_MacAdress ="be:ff:90:00:7f:cd"
@@ -55,7 +56,46 @@ async def find_light_device():
             return device.address
     return None
 
+async def set_color(client, color_input):
+    """Set the color of the light"""
+    if color_input == 'rgb':
+        try:
+            r = int(input("Enter red value (0-255): "))
+            g = int(input("Enter green value (0-255): "))
+            b = int(input("Enter blue value (0-255): "))
+            r = max(0, min(255, r))  # Clamp values between 0-255
+            g = max(0, min(255, g))
+            b = max(0, min(255, b))
+        except ValueError:
+            print("Invalid input. Please enter numbers between 0-255.")
+            return False
+    elif color_input in mplColors:
+        r, g, b = tuple(int(x * 255) for x in matplotlib.colors.to_rgb(color_input))
+    else:
+        print(f"Unknown color: {color_input}")
+        return False
+
+    try:
+        command = create_color_command(r, g, b)
+        await client.write_gatt_char(CHARACTERISTIC_UIUD, command)
+        print(f"Set color to: {color_input if color_input != 'rgb' else f'R:{r} G:{g} B:{b}'}")
+        return True
+    except Exception as e:
+        print(f"Error sending command: {e}")
+        return False
+
 async def main():
+    parser = argparse.ArgumentParser(description='Control your BLE light')
+    parser.add_argument('--color', '-c', help='Set a color (matplotlib color name or "rgb")')
+    parser.add_argument('--rgb', nargs=3, type=int, metavar=('R', 'G', 'B'), 
+                      help='Set RGB values (0-255)')
+    parser.add_argument('--on', action='store_true', help='Turn light on')
+    parser.add_argument('--off', action='store_true', help='Turn light off')
+    parser.add_argument('--interactive', '-i', action='store_true', 
+                      help='Run in interactive mode')
+    
+    args = parser.parse_args()
+
     # Find the device
     address = await find_light_device()
     if not address:
@@ -69,63 +109,50 @@ async def main():
         async with BleakClient(address) as client:
             print("Connected to the light!")
             
-            # Turn on the light first
-            await client.write_gatt_char(CHARACTERISTIC_UIUD, create_power_command(True))
-            print("Light turned on successfully!")
+            # Handle command line arguments
+            if args.on:
+                await client.write_gatt_char(CHARACTERISTIC_UIUD, create_power_command(True))
+                print("Light turned on")
+                return
+            elif args.off:
+                await client.write_gatt_char(CHARACTERISTIC_UIUD, create_power_command(False))
+                print("Light turned off")
+                return
+            elif args.rgb:
+                r, g, b = [max(0, min(255, x)) for x in args.rgb]
+                await set_color(client, 'rgb')
+                return
+            elif args.color:
+                await set_color(client, args.color)
+                return
             
-            while True:
-                print("\nAvailable commands:")
-                print("Example colors:", ", ".join(EXAMPLE_COLORS))
-                print("(Any matplotlib color name is supported)")
-                print("- 'rgb': Enter custom RGB values")
-                print("- 'off': Turn off the light")
-                print("- 'on': Turn on the light")
-                print("- 'quit': Exit program")
+            # If no arguments or interactive mode, run the interactive loop
+            if args.interactive or not any(vars(args).values()):
+                # Turn on the light first
+                await client.write_gatt_char(CHARACTERISTIC_UIUD, create_power_command(True))
+                print("Light turned on successfully!")
                 
-                color_input = input("\nEnter your choice: ").lower()
-                
-                if color_input == 'quit':
-                    print("Turning off light and exiting...")
-                    await client.write_gatt_char(CHARACTERISTIC_UIUD, create_power_command(False))
-                    break
-                
-                if color_input == 'rgb':
-                    try:
-                        r = int(input("Enter red value (0-255): "))
-                        g = int(input("Enter green value (0-255): "))
-                        b = int(input("Enter blue value (0-255): "))
-                        r = max(0, min(255, r))  # Clamp values between 0-255
-                        g = max(0, min(255, g))
-                        b = max(0, min(255, b))
-                    except ValueError:
-                        print("Invalid input. Please enter numbers between 0-255.")
-                        continue
-                
-                elif color_input in mplColors:
-                    r, g, b = tuple(int(x * 255) for x in matplotlib.colors.to_rgb(color_input))
-                    if color_input == 'off':
+                while True:
+                    print("\nAvailable commands:")
+                    print("Example colors:", ", ".join(EXAMPLE_COLORS))
+                    print("(Any matplotlib color name is supported)")
+                    print("- 'rgb': Enter custom RGB values")
+                    print("- 'off': Turn off the light")
+                    print("- 'on': Turn on the light")
+                    print("- 'quit': Exit program")
+                    
+                    color_input = input("\nEnter your choice: ").lower()
+                    
+                    if color_input == 'quit':
+                        print("Turning off light and exiting...")
                         await client.write_gatt_char(CHARACTERISTIC_UIUD, create_power_command(False))
-                        print("Light turned off")
-                        continue
-                elif color_input == 'on':
-                    await client.write_gatt_char(CHARACTERISTIC_UIUD, create_power_command(True))
-                    print("Light turned on")
-                    continue
-                elif color_input == 'off':
-                    await client.write_gatt_char(CHARACTERISTIC_UIUD, create_power_command(False))
-                    print("Light turned off")
-                    continue
-                else:
-                    print(f"Unknown command. Please try again.")
-                    continue
-                
-                # Send the color command
-                try:
-                    command = create_color_command(r, g, b)
-                    await client.write_gatt_char(CHARACTERISTIC_UIUD, command)
-                    print(f"Set color to: {color_input if color_input != 'rgb' else f'R:{r} G:{g} B:{b}'}")
-                except Exception as e:
-                    print(f"Error sending command: {e}")
+                        break
+                    elif color_input in ['on', 'off']:
+                        await client.write_gatt_char(CHARACTERISTIC_UIUD, 
+                                                   create_power_command(color_input == 'on'))
+                        print(f"Light turned {color_input}")
+                    else:
+                        await set_color(client, color_input)
 
     except Exception as e:
         print(f"Connection error: {e}")
